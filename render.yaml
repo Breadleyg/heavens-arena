@@ -1,0 +1,14 @@
+# Render configuration file
+# This file tells Render how to deploy your application
+
+services:
+  - type: web
+    name: heavens-arena
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT wsgi:application
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.11.0

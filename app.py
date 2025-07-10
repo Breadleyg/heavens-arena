@@ -21,12 +21,30 @@ DATABASE = 'users.db'
 
 def init_db():
     """Initialize database if it doesn't exist"""
-    if not os.path.exists(DATABASE):
+    try:
+        if not os.path.exists(DATABASE):
+            print("🗃️ Creating database...")
+            conn = sqlite3.connect(DATABASE)
+            with open('schema.sql', 'r') as f:
+                conn.executescript(f.read())
+            conn.commit()
+            conn.close()
+            print("✅ Database created successfully")
+        else:
+            print("✅ Database already exists")
+    except Exception as e:
+        print(f"❌ Database initialization error: {e}")
+        # Create a simple fallback database
         conn = sqlite3.connect(DATABASE)
-        with open('schema.sql', 'r') as f:
-            conn.executescript(f.read())
+        conn.execute('''CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            floor INTEGER DEFAULT 1
+        )''')
         conn.commit()
         conn.close()
+        print("✅ Fallback database created")
 
 # Initialize database on startup
 init_db()
@@ -304,7 +322,16 @@ def debug():
         "user_sid_keys": list(user_sid.keys())
     })
 
+@app.route('/health')
+def health():
+    """Health check endpoint for Render"""
+    return jsonify({"status": "healthy", "service": "heavens-arena"})
+
 if __name__ == '__main__':
     import os
-    port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    port = int(os.environ.get('PORT', 10000))  # Render uses port 10000 by default
+    # Use allow_unsafe_werkzeug for development only
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+else:
+    # For production with gunicorn, just expose the app
+    application = app

@@ -1,13 +1,35 @@
 from flask import Flask, render_template, request, session, jsonify, g
 from flask_socketio import SocketIO, emit, join_room
 from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3, time
+import sqlite3, time, os
 
 app = Flask(__name__)
-app.secret_key = 'geheim123'
-socketio = SocketIO(app, cors_allowed_origins="*")
+app.secret_key = os.environ.get('SECRET_KEY', 'geheim123')
+
+# 🔧 Fix Socket.IO for Heroku deployment
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*",
+    logger=True,
+    engineio_logger=True,
+    transports=['websocket', 'polling'],
+    ping_timeout=60,
+    ping_interval=25
+)
 
 DATABASE = 'users.db'
+
+def init_db():
+    """Initialize database if it doesn't exist"""
+    if not os.path.exists(DATABASE):
+        conn = sqlite3.connect(DATABASE)
+        with open('schema.sql', 'r') as f:
+            conn.executescript(f.read())
+        conn.commit()
+        conn.close()
+
+# Initialize database on startup
+init_db()
 
 def get_db():
     if 'db' not in g:
@@ -76,27 +98,53 @@ def update_floor(username, won):
 
 @socketio.on('connect')
 def handle_connect():
-    print(f"Connectie van socket: {request.sid}")
+    print(f"🔌 Socket connected: {request.sid}")
+    emit('connected', {'status': 'connected', 'sid': request.sid})
 
 @socketio.on('register_user')
 def handle_register_user(data):
     username = data.get('username')
+    if not username:
+        print("❌ No username provided in register_user")
+        return
+    
     user_sid[username] = request.sid
-    print(f"{username} gekoppeld aan socket: {request.sid}")
+    print(f"✅ {username} registered with socket: {request.sid}")
+    print(f"📊 Total connected users: {len(user_sid)}")
+    emit('user_registered', {'status': 'registered', 'username': username})
 
 @socketio.on('find_match')
 def handle_find_match(data):
     username = data.get('username')
+    if not username:
+        print("❌ No username provided in find_match")
+        emit('match_error', {'error': 'Username is required'})
+        return
+        
+    print(f"🔍 {username} looking for match. Socket: {request.sid}")
+    
+    # Verify user is properly registered
+    if username not in user_sid:
+        print(f"❌ {username} not found in user_sid, re-registering")
+        user_sid[username] = request.sid
+    
     if username in user_room:
+        print(f"❌ {username} already in room: {user_room[username]}")
         emit('match_error', {'error': 'Je zit al in een actieve match'}, room=user_sid.get(username))
         return
+        
     if username not in waiting_players:
         waiting_players.append(username)
+        print(f"📝 Added {username} to waiting list. Total waiting: {len(waiting_players)}")
 
+    print(f"🎯 Current waiting players: {waiting_players}")
+    
     if len(waiting_players) >= 2:
         p1 = waiting_players.pop(0)
         p2 = waiting_players.pop(0)
         room_id = f"room_{p1}_{p2}_{int(time.time())}"
+
+        print(f"🎮 Creating match: {p1} vs {p2} in room {room_id}")
 
         active_rooms[room_id] = {
             "players": [p1, p2],
@@ -106,12 +154,32 @@ def handle_find_match(data):
         user_room[p1] = room_id
         user_room[p2] = room_id
 
-        join_room(room_id, sid=user_sid[p1])
-        join_room(room_id, sid=user_sid[p2])
+        # Ensure both players have valid socket connections
+        p1_sid = user_sid.get(p1)
+        p2_sid = user_sid.get(p2)
+        
+        if not p1_sid or not p2_sid:
+            print(f"❌ Missing socket IDs: {p1}={p1_sid}, {p2}={p2_sid}")
+            # Cleanup and re-add to waiting if socket missing
+            if room_id in active_rooms:
+                del active_rooms[room_id]
+            user_room.pop(p1, None)
+            user_room.pop(p2, None)
+            if p1_sid:
+                waiting_players.insert(0, p1)
+            if p2_sid:
+                waiting_players.insert(0, p2)
+            emit('match_error', {'error': 'Connection error, please try again'})
+            return
 
-        emit('match_found', {'opponent': p2}, room=user_sid[p1])
-        emit('match_found', {'opponent': p1}, room=user_sid[p2])
+        join_room(room_id, sid=p1_sid)
+        join_room(room_id, sid=p2_sid)
+
+        print(f"✅ Sending match_found to both players")
+        emit('match_found', {'opponent': p2}, room=p1_sid)
+        emit('match_found', {'opponent': p1}, room=p2_sid)
     else:
+        print(f"⏳ {username} waiting for opponent...")
         emit('waiting', {'message': 'Wachten op tegenstander...'}, room=request.sid)
 
 @socketio.on('accept_match')
@@ -179,11 +247,40 @@ def handle_make_move(data):
 @socketio.on('disconnect')
 def handle_disconnect():
     sid = request.sid
-    for user, s in user_sid.items():
+    disconnected_user = None
+    
+    # Find and remove disconnected user
+    for user, s in list(user_sid.items()):
         if s == sid:
-            print(f"{user} disconnected.")
-            user_sid.pop(user)
+            disconnected_user = user
+            print(f"🔌 {user} disconnected (socket: {sid})")
+            user_sid.pop(user, None)
             break
+    
+    if disconnected_user:
+        # Remove from waiting list
+        if disconnected_user in waiting_players:
+            waiting_players.remove(disconnected_user)
+            print(f"📝 Removed {disconnected_user} from waiting list")
+        
+        # Handle active room cleanup
+        room_id = user_room.get(disconnected_user)
+        if room_id and room_id in active_rooms:
+            room = active_rooms[room_id]
+            other_player = [p for p in room["players"] if p != disconnected_user]
+            if other_player:
+                other_player = other_player[0]
+                print(f"🎮 Notifying {other_player} that opponent disconnected")
+                if other_player in user_sid:
+                    emit('match_error', {'error': 'Tegenstander heeft de verbinding verbroken'}, 
+                         room=user_sid[other_player])
+                user_room.pop(other_player, None)
+            
+            del active_rooms[room_id]
+            user_room.pop(disconnected_user, None)
+            print(f"🧹 Cleaned up room {room_id}")
+    
+    print(f"📊 Remaining connected users: {len(user_sid)}")
 
 @app.route('/leaderboard')
 def leaderboard():
@@ -198,5 +295,16 @@ def leaderboard():
         for row in rows
     ])
 
+@app.route('/debug')
+def debug():
+    return jsonify({
+        "connected_users": len(user_sid),
+        "waiting_players": waiting_players,
+        "active_rooms": len(active_rooms),
+        "user_sid_keys": list(user_sid.keys())
+    })
+
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    import os
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, host='0.0.0.0', port=port, debug=False)

@@ -1,6 +1,13 @@
-const socket = io();
+const socket = io({
+  transports: ["websocket", "polling"],
+  timeout: 20000,
+  forceNew: true,
+});
+
 let username = null;
 let currentOpponent = null;
+let isConnected = false;
+let searchTimeout = null;
 
 // 🔐 Login/Registratie
 async function register() {
@@ -56,14 +63,32 @@ function startGame(floor) {
 
 // 🕹️ Match zoeken
 function findMatch() {
+  if (!isConnected) {
+    showMessage("result", "Geen verbinding met server. Ververs de pagina.");
+    return;
+  }
+
   if (currentOpponent !== null) {
     showMessage("result", "Je zit al in een match!");
+    return;
+  }
+
+  if (!username) {
+    showMessage("result", "Geen gebruiker ingelogd.");
     return;
   }
 
   showMessage("result", "");
   document.getElementById("battle").innerHTML = "";
   document.getElementById("find-btn").disabled = true; // 🔒 knop uit
+
+  // Set timeout to re-enable button if no match found
+  searchTimeout = setTimeout(() => {
+    document.getElementById("find-btn").disabled = false;
+    showMessage("result", "Geen tegenstander gevonden. Probeer opnieuw.");
+  }, 30000); // 30 seconds timeout
+
+  console.log(`🔍 ${username} searching for match...`);
   socket.emit("find_match", { username });
   showMessage("result", "Zoeken naar tegenstander...");
 }
@@ -88,11 +113,41 @@ function showMessage(id, text) {
 
 // 🎧 Socket events
 
+// 🔌 Connection handling
+socket.on("connect", () => {
+  console.log("✅ Connected to server");
+  isConnected = true;
+  if (username) {
+    console.log("🔄 Re-registering user after reconnect");
+    socket.emit("register_user", { username });
+  }
+});
+
+socket.on("disconnect", () => {
+  console.log("❌ Disconnected from server");
+  isConnected = false;
+  showMessage("result", "Verbinding verbroken. Probeer opnieuw...");
+});
+
+socket.on("connected", (data) => {
+  console.log("🔌 Server confirmed connection:", data);
+});
+
+socket.on("user_registered", (data) => {
+  console.log("✅ User registration confirmed:", data);
+});
+
 socket.on("waiting", (data) => {
   showMessage("result", data.message);
 });
 
 socket.on("match_found", (data) => {
+  // Clear search timeout since match was found
+  if (searchTimeout) {
+    clearTimeout(searchTimeout);
+    searchTimeout = null;
+  }
+
   currentOpponent = data.opponent;
   document.getElementById("battle").innerHTML = `
     <p>Gevonden tegenstander: <strong>${currentOpponent}</strong></p>

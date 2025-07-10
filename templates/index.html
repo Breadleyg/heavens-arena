@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Heavens Arena Realtime</title>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+  </head>
+  <body>
+    <h1>Heavens Arena Realtime</h1>
+
+    <div id="auth">
+      <h3>Login of Registreer</h3>
+      <input id="username" placeholder="Gebruikersnaam" autocomplete="off" />
+      <input
+        id="password"
+        placeholder="Wachtwoord"
+        type="password"
+        autocomplete="off"
+      /><br />
+      <button onclick="register()">Registreer</button>
+      <button onclick="login()">Login</button>
+      <p id="auth-message"></p>
+    </div>
+
+    <div id="game" style="display: none">
+      <p id="floor-info"></p>
+      <button id="find-btn" enabled onclick="findMatch()">
+        Zoek tegenstander
+      </button>
+      <div id="battle" style="margin-top: 1em"></div>
+      <p id="result"></p>
+      <hr />
+      <h3>Live spelers: <span id="active-count">...</span></h3>
+      <h3>🏆 Leaderboard</h3>
+      <div id="leaderboard">Laden...</div>
+    </div>
+
+    <script src="/static/script.js"></script>
+  </body>
+</html>
